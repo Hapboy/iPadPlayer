@@ -48,6 +48,7 @@ export class DeviceStateManager {
       playbackRate: 1.0,
       driftMs: 0,
       latencyMs: 0,
+      startupLatencyMs: 420, // Hardware decoder startup latency (ms)
       batteryLevel: null,
       isCharging: null,
       isFullscreen: false,
@@ -133,6 +134,9 @@ export class DeviceStateManager {
     if (typeof data.playbackRate === 'number') slot.playbackRate = data.playbackRate;
     if (typeof data.driftMs === 'number') slot.driftMs = data.driftMs;
     if (typeof data.latencyMs === 'number') slot.latencyMs = data.latencyMs;
+    if (typeof data.startupLatencyMs === 'number' && data.startupLatencyMs > 0) {
+      slot.startupLatencyMs = Math.min(1000, Math.max(100, Math.round(data.startupLatencyMs)));
+    }
     if (data.batteryLevel !== undefined) slot.batteryLevel = data.batteryLevel;
     if (data.isCharging !== undefined) slot.isCharging = data.isCharging;
     if (typeof data.isFullscreen === 'boolean') slot.isFullscreen = data.isFullscreen;
@@ -298,12 +302,30 @@ export class DeviceStateManager {
     return null;
   }
 
+  getMedianStartupLatency() {
+    const latencies = [];
+    for (const slot of this.slots.values()) {
+      if (slot.connected && slot.startupLatencyMs > 0) {
+        latencies.push(slot.startupLatencyMs);
+      }
+    }
+    if (latencies.length === 0) return 420; // Default Apple AVFoundation lead
+    latencies.sort((a, b) => a - b);
+    const median = latencies[Math.floor(latencies.length / 2)];
+    return Math.min(800, Math.max(200, median));
+  }
+
   getAdminSnapshot() {
     const devices = [];
     let connectedCount = 0;
     let armedCount = 0;
     let fileLoadedCount = 0;
     let maxDrift = 0;
+    const now = Date.now();
+
+    // Startup grace period: 1.8 seconds after startServerTime
+    const isStartingUp = this.globalPlayback.status === 'playing' && 
+      (now - this.globalPlayback.startServerTime < 1800);
 
     for (let i = 1; i <= this.totalDevices; i++) {
       const slot = this.slots.get(i);
@@ -314,6 +336,10 @@ export class DeviceStateManager {
         connectedCount++;
         if (copy.isArmed) armedCount++;
         if (copy.fileLoaded) fileLoadedCount++;
+        // During startup grace period, ignore transient cold-start decoder drift
+        if (isStartingUp) {
+          copy.driftMs = 0;
+        }
         if (Math.abs(copy.driftMs) > Math.abs(maxDrift)) {
           maxDrift = copy.driftMs;
         }
@@ -323,7 +349,7 @@ export class DeviceStateManager {
 
     return {
       type: 'admin_state',
-      serverTime: Date.now(),
+      serverTime: now,
       globalPlayback: {
         ...this.globalPlayback,
         currentEstimatedPosition: this.getCurrentGlobalPosition()
@@ -333,7 +359,9 @@ export class DeviceStateManager {
         connected: connectedCount,
         armed: armedCount,
         fileLoaded: fileLoadedCount,
-        maxDriftMs: maxDrift
+        maxDriftMs: maxDrift,
+        hardwareLeadMs: this.getMedianStartupLatency(),
+        isStartingUp
       },
       devices
     };

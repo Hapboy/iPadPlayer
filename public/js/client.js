@@ -25,8 +25,14 @@ class iPadPlayerClient {
       onSyncUpdate: (stats) => this._onSyncUpdate(stats)
     });
 
+    this.startupLatencyMs = 420; // Default hardware lead estimate for iPad AVFoundation
+
     this.syncController = new VideoSyncController(this.videoElement, this.clockSync, {
-      onDriftChange: (driftMs) => this._onDriftChange(driftMs)
+      onDriftChange: (driftMs) => this._onDriftChange(driftMs),
+      onStartupCalibrated: (calibratedLeadMs) => {
+        this.startupLatencyMs = calibratedLeadMs;
+        this.sendTelemetry();
+      }
     });
 
     this.battery = null;
@@ -186,12 +192,22 @@ class iPadPlayerClient {
       console.warn('Fullscreen request bypassed:', e);
     }
 
-    // Unlock video/audio context
+    // Unlock video/audio context and calibrate hardware spin-up latency
     try {
       this.videoElement.muted = true; // start muted for guarantee
+      const t0 = performance.now();
       await this.videoElement.play();
+      const tPlay = performance.now();
       this.videoElement.pause();
+      this.videoElement.currentTime = 0;
       this.videoElement.muted = false; // unmute after unlocking
+
+      const measuredStartup = Math.round(tPlay - t0);
+      if (measuredStartup >= 150 && measuredStartup <= 900) {
+        this.startupLatencyMs = measuredStartup;
+        this.syncController.hardwareLeadMs = measuredStartup;
+        console.log(`[Arm] Calibrated hardware spin-up latency: ${measuredStartup}ms`);
+      }
     } catch (e) {
       console.warn('Video unlock play attempt:', e);
     }
@@ -447,17 +463,17 @@ class iPadPlayerClient {
 
     switch (cmd.action) {
       case 'play':
-        this.syncController.schedulePlay(cmd.targetServerTime, cmd.startPosition, cmd.syncMode);
+        this.syncController.schedulePlay(cmd.targetServerTime, cmd.startPosition, cmd.syncMode, cmd.hardwareLeadMs);
         this._updateStatusBadgeMode();
         break;
 
       case 'retrigger':
-        this.syncController.schedulePlay(cmd.targetServerTime, 0, cmd.syncMode);
+        this.syncController.schedulePlay(cmd.targetServerTime, 0, cmd.syncMode, cmd.hardwareLeadMs);
         this._updateStatusBadgeMode();
         break;
 
       case 'loop_restart':
-        this.syncController.handleLoopRestart(cmd.targetServerTime, cmd.syncMode);
+        this.syncController.handleLoopRestart(cmd.targetServerTime, cmd.syncMode, cmd.hardwareLeadMs);
         break;
 
       case 'set_sync_mode':
@@ -567,6 +583,7 @@ class iPadPlayerClient {
       playbackRate: this.videoElement.playbackRate,
       driftMs: this.syncController.getDriftMs(),
       latencyMs: this.clockSync.getLatency(),
+      startupLatencyMs: this.startupLatencyMs,
       batteryLevel,
       isCharging,
       isFullscreen

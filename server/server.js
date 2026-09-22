@@ -180,6 +180,7 @@ function handleAdminCommand(msg) {
       const startPosition = typeof msg.position === 'number' 
         ? Math.max(0, msg.position) 
         : stateManager.getCurrentGlobalPosition();
+      const hardwareLeadMs = stateManager.getMedianStartupLatency();
 
       stateManager.setPlay(targetServerTime, startPosition);
 
@@ -188,7 +189,8 @@ function handleAdminCommand(msg) {
         action: 'play',
         targetServerTime,
         startPosition,
-        syncMode: stateManager.globalPlayback.syncMode
+        syncMode: stateManager.globalPlayback.syncMode,
+        hardwareLeadMs
       });
       break;
     }
@@ -196,6 +198,7 @@ function handleAdminCommand(msg) {
     case 'retrigger': {
       const delayMs = msg.delayMs || 600;
       const targetServerTime = now + delayMs;
+      const hardwareLeadMs = stateManager.getMedianStartupLatency();
       stateManager.setPlay(targetServerTime, 0);
 
       broadcastToClients({
@@ -203,7 +206,8 @@ function handleAdminCommand(msg) {
         action: 'retrigger',
         targetServerTime,
         startPosition: 0,
-        syncMode: stateManager.globalPlayback.syncMode
+        syncMode: stateManager.globalPlayback.syncMode,
+        hardwareLeadMs
       });
       break;
     }
@@ -237,6 +241,7 @@ function handleAdminCommand(msg) {
       const delayMs = msg.delayMs || 600;
       const targetServerTime = now + delayMs;
       const position = Math.max(0, Number(msg.position) || 0);
+      const hardwareLeadMs = stateManager.getMedianStartupLatency();
 
       stateManager.setSeek(position, targetServerTime);
 
@@ -246,7 +251,8 @@ function handleAdminCommand(msg) {
         targetServerTime,
         position,
         autoPlay: stateManager.globalPlayback.status === 'playing',
-        syncMode: stateManager.globalPlayback.syncMode
+        syncMode: stateManager.globalPlayback.syncMode,
+        hardwareLeadMs
       });
       break;
     }
@@ -324,7 +330,8 @@ const adminBroadcastInterval = setInterval(() => {
       action: 'loop_restart',
       targetServerTime: loopBoundary.targetServerTime,
       cycleIndex: loopBoundary.nextCycleIndex,
-      syncMode: loopBoundary.syncMode
+      syncMode: loopBoundary.syncMode,
+      hardwareLeadMs: stateManager.getMedianStartupLatency()
     });
   }
 

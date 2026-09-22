@@ -128,3 +128,40 @@ test('VideoSyncController - handleLoopRestart seamlessly schedules cycle boundar
   assert.equal(controller.playStartPosition, 0);
   assert.equal(controller.syncMode, 'free_run');
 });
+
+test('VideoSyncController - Initial micro-catchup window catches residual startup lag in free_run', () => {
+  const mockVideo = {
+    currentTime: 0.1,
+    duration: 60.0,
+    paused: false,
+    playbackRate: 1.0,
+    play: async () => {},
+    pause: () => {},
+    addEventListener: () => {}
+  };
+
+  const mockClock = {
+    getServerTime: () => 1500, // 500ms elapsed since startServerTime
+    toLocalTime: (t) => t
+  };
+
+  const controller = new VideoSyncController(mockVideo, mockClock, { syncMode: 'free_run' });
+  controller.playServerStartTime = 1000;
+  controller.playStartPosition = 0;
+  // Activate initial micro-catchup window
+  controller.initialCatchupUntil = Date.now() + 2000;
+
+  // Expected position: 0.5s. Actual: 0.1s (-400ms lag)
+  mockVideo.currentTime = 0.1;
+  controller.correctDrift();
+
+  // In free_run, DURING initial catchup window, playback rate should increase to 1.08 to eliminate start lag
+  assert.equal(mockVideo.playbackRate, 1.08, 'Should temporarily speed up during initial startup catchup');
+
+  // After initial catchup window expires
+  controller.initialCatchupUntil = Date.now() - 100;
+  controller.correctDrift();
+  // Must return strictly to 1.0x native rate in free_run
+  assert.equal(mockVideo.playbackRate, 1.0, 'Must lock to 1.0x once initial catchup window ends');
+});
+

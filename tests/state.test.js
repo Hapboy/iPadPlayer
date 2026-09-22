@@ -159,3 +159,51 @@ test('DeviceStateManager - syncMode switching and loop boundary auto-sync', () =
   const duplicate = manager.checkLoopBoundary(1200);
   assert.equal(duplicate, null, 'Should not duplicate broadcast for the same cycle');
 });
+
+test('DeviceStateManager - Startup latency tracking and median calculation', () => {
+  const manager = new DeviceStateManager(42);
+  const mockWs = { readyState: 1, send: () => {} };
+
+  // Register 3 devices with different startup latencies
+  manager.registerClient(mockWs, 's1', { id: 1 });
+  manager.registerClient(mockWs, 's2', { id: 2 });
+  manager.registerClient(mockWs, 's3', { id: 3 });
+
+  manager.updateTelemetry('s1', { startupLatencyMs: 380, driftMs: 10 });
+  manager.updateTelemetry('s2', { startupLatencyMs: 440, driftMs: -15 });
+  manager.updateTelemetry('s3', { startupLatencyMs: 420, driftMs: 5 });
+
+  // Median of [380, 420, 440] is 420
+  assert.equal(manager.getMedianStartupLatency(), 420);
+
+  // Default fallback when no connected devices
+  const emptyManager = new DeviceStateManager(42);
+  assert.equal(emptyManager.getMedianStartupLatency(), 420);
+});
+
+test('DeviceStateManager - Startup grace period masks transient desync in snapshot', () => {
+  const manager = new DeviceStateManager(42);
+  const mockWs = { readyState: 1, send: () => {} };
+  manager.registerClient(mockWs, 's1', { id: 1, isArmed: true });
+
+  // Start playback right now
+  const now = Date.now();
+  manager.setPlay(now, 0);
+
+  // Client reports temporary startup latency / drift of -440ms
+  manager.updateTelemetry('s1', { driftMs: -440, currentTime: 0.1 });
+
+  // During grace period (now - startServerTime < 1800ms)
+  const snapshotGrace = manager.getAdminSnapshot();
+  assert.equal(snapshotGrace.summary.isStartingUp, true);
+  assert.equal(snapshotGrace.summary.maxDriftMs, 0, 'Summary drift should be masked to 0 during startup');
+  assert.equal(snapshotGrace.devices[0].driftMs, 0, 'Device card drift should be masked to 0 during startup');
+
+  // After grace period passes
+  manager.globalPlayback.startServerTime = now - 2000;
+  const snapshotAfterGrace = manager.getAdminSnapshot();
+  assert.equal(snapshotAfterGrace.summary.isStartingUp, false);
+  assert.equal(snapshotAfterGrace.summary.maxDriftMs, -440);
+  assert.equal(snapshotAfterGrace.devices[0].driftMs, -440);
+});
+

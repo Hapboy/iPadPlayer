@@ -130,6 +130,12 @@ export class VideoSyncController {
     this.hardSeekCooldownMs = 3000;
     this.onDriftChange = options.onDriftChange || null;
 
+    // Hardware AVFoundation Startup Lead Compensation (default 420ms for Apple iPad chips)
+    this.hardwareLeadMs = options.hardwareLeadMs || 420;
+    this.lastPlayCallTime = 0;
+    this.initialCatchupUntil = 0;
+    this.onStartupCalibrated = options.onStartupCalibrated || null;
+
     this._setupVideoEvents();
   }
 
@@ -139,6 +145,21 @@ export class VideoSyncController {
       this.video.preservesPitch = true;
       this.video.webkitPreservesPitch = true;
     } catch (e) {}
+
+    // Auto-calibrate decoder startup delay when video actually starts playing
+    this.video.addEventListener('playing', () => {
+      if (this.lastPlayCallTime > 0) {
+        const measuredStartup = Date.now() - this.lastPlayCallTime;
+        this.lastPlayCallTime = 0;
+        if (measuredStartup >= 150 && measuredStartup <= 900) {
+          // Smoothly adapt hardware lead for this specific device
+          this.hardwareLeadMs = Math.round(0.4 * measuredStartup + 0.6 * this.hardwareLeadMs);
+          if (this.onStartupCalibrated) {
+            this.onStartupCalibrated(this.hardwareLeadMs);
+          }
+        }
+      }
+    });
 
     this.video.addEventListener('ended', () => {
       if (this.loopEnabled && this.playServerStartTime > 0) {
@@ -162,13 +183,16 @@ export class VideoSyncController {
   }
 
   /**
-   * High-precision scheduled play command
+   * High-precision scheduled play command with Hardware Lead Compensation
    */
-  schedulePlay(targetServerTime, startPosition = 0, syncMode = null) {
+  schedulePlay(targetServerTime, startPosition = 0, syncMode = null, hardwareLeadMs = null) {
     this.cancelScheduled();
 
     if (syncMode) {
       this.setSyncMode(syncMode);
+    }
+    if (typeof hardwareLeadMs === 'number' && hardwareLeadMs > 0) {
+      this.hardwareLeadMs = hardwareLeadMs;
     }
 
     this.playServerStartTime = targetServerTime;
@@ -178,8 +202,9 @@ export class VideoSyncController {
     this.smoothedDriftMs = 0;
 
     const targetLocalTime = this.clockSync.toLocalTime(targetServerTime);
+    const triggerLocalTime = targetLocalTime - this.hardwareLeadMs;
     const nowLocal = Date.now();
-    const waitMs = targetLocalTime - nowLocal;
+    const waitMs = triggerLocalTime - nowLocal;
 
     // Set video position ahead of time so the first frame is pre-buffered
     try {
@@ -190,15 +215,15 @@ export class VideoSyncController {
     }
 
     if (waitMs > 25) {
-      // Coarse wait with setTimeout, then fine-wait with requestAnimationFrame
+      // Coarse wait with setTimeout, then fine-wait with animation frame
       this.scheduledTimerId = setTimeout(() => {
-        this._fineTunePlay(targetLocalTime);
+        this._fineTunePlay(triggerLocalTime, targetLocalTime);
       }, waitMs - 20);
     } else if (waitMs > 0) {
-      this._fineTunePlay(targetLocalTime);
+      this._fineTunePlay(triggerLocalTime, targetLocalTime);
     } else {
       // Late arrival: compute elapsed time and start immediately
-      const elapsedSec = Math.abs(waitMs) / 1000;
+      const elapsedSec = Math.max(0, (nowLocal - targetLocalTime) / 1000);
       const targetPos = this.playStartPosition + elapsedSec;
       this._startImmediatePlay(targetPos);
     }
@@ -206,10 +231,11 @@ export class VideoSyncController {
     this._startDriftMonitoring();
   }
 
-  _fineTunePlay(targetLocalTime) {
+  _fineTunePlay(triggerLocalTime, targetLocalTime) {
     const step = () => {
-      const remaining = targetLocalTime - Date.now();
+      const remaining = triggerLocalTime - Date.now();
       if (remaining <= 2) {
+        this.lastPlayCallTime = Date.now();
         this.video.currentTime = this.playStartPosition;
         this.video.playbackRate = 1.0;
         this.video.play().catch(err => {
@@ -217,6 +243,8 @@ export class VideoSyncController {
         });
         this.isPlayScheduled = false;
         this.scheduledRafId = null;
+        // Activate 2.5s initial micro-catchup window to eliminate any residual millisecond delta
+        this.initialCatchupUntil = targetLocalTime + 2500;
       } else {
         this.scheduledRafId = safeRaf(step);
       }
@@ -241,17 +269,21 @@ export class VideoSyncController {
   }
 
   /**
-   * Seamless scheduled loop restart at cycle boundary
-   * Synchronously resets position to 0 exactly at targetServerTime
+   * Seamless scheduled loop restart at cycle boundary with Hardware Lead Compensation
+   * Triggers video.play() ahead of time so the first frame renders exactly at targetServerTime
    */
-  handleLoopRestart(targetServerTime, syncMode = null) {
+  handleLoopRestart(targetServerTime, syncMode = null, hardwareLeadMs = null) {
     if (syncMode) {
       this.setSyncMode(syncMode);
     }
+    if (typeof hardwareLeadMs === 'number' && hardwareLeadMs > 0) {
+      this.hardwareLeadMs = hardwareLeadMs;
+    }
 
     const targetLocalTime = this.clockSync.toLocalTime(targetServerTime);
+    const triggerLocalTime = targetLocalTime - this.hardwareLeadMs;
     const nowLocal = Date.now();
-    const waitMs = targetLocalTime - nowLocal;
+    const waitMs = triggerLocalTime - nowLocal;
 
     this.playServerStartTime = targetServerTime;
     this.playStartPosition = 0;
@@ -260,10 +292,12 @@ export class VideoSyncController {
     if (waitMs > 25) {
       this.scheduledTimerId = setTimeout(() => {
         const step = () => {
-          if (Date.now() >= targetLocalTime - 2) {
+          if (Date.now() >= triggerLocalTime - 2) {
+            this.lastPlayCallTime = Date.now();
             this.video.currentTime = 0;
             this.video.playbackRate = 1.0;
             this.video.play().catch(e => console.warn('Loop restart play:', e));
+            this.initialCatchupUntil = targetLocalTime + 2500;
           } else {
             this.scheduledRafId = safeRaf(step);
           }
@@ -272,10 +306,12 @@ export class VideoSyncController {
       }, waitMs - 20);
     } else if (waitMs > 0) {
       const step = () => {
-        if (Date.now() >= targetLocalTime - 2) {
+        if (Date.now() >= triggerLocalTime - 2) {
+          this.lastPlayCallTime = Date.now();
           this.video.currentTime = 0;
           this.video.playbackRate = 1.0;
           this.video.play().catch(e => console.warn('Loop restart play:', e));
+          this.initialCatchupUntil = targetLocalTime + 2500;
         } else {
           this.scheduledRafId = safeRaf(step);
         }
@@ -283,7 +319,7 @@ export class VideoSyncController {
       this.scheduledRafId = safeRaf(step);
     } else {
       // Past due
-      const elapsed = Math.min(this.video.duration || 10, Math.abs(waitMs) / 1000);
+      const elapsed = Math.min(this.video.duration || 10, Math.max(0, (nowLocal - targetLocalTime) / 1000));
       try {
         this.video.currentTime = elapsed;
       } catch (e) {}
@@ -401,14 +437,24 @@ export class VideoSyncController {
       this.onDriftChange(rawDriftMs);
     }
 
+    const now = Date.now();
+    const inInitialCatchup = this.initialCatchupUntil && now < this.initialCatchupUntil;
+
     // ===============================================================
     // MODE 1: Free-run with Loop Auto-Sync
     // During playback, NO drift corrections are made (hardware 1.0x native rate)
+    // EXCEPT in the first 2.5s initial micro-catchup window to eliminate residual start delay!
     // Synchronicity is reset at each loop boundary!
     // ===============================================================
     if (this.syncMode === 'free_run') {
-      if (this.video.playbackRate !== 1.0) {
-        this.video.playbackRate = 1.0;
+      if (inInitialCatchup && Math.abs(this.smoothedDriftMs) > 20) {
+        // Fast, subtle initial catchup for residual hardware startup variance
+        const catchupRate = this.smoothedDriftMs < 0 ? 1.08 : 0.94;
+        this.video.playbackRate = catchupRate;
+      } else {
+        if (this.video.playbackRate !== 1.0) {
+          this.video.playbackRate = 1.0;
+        }
       }
       return;
     }
@@ -418,7 +464,6 @@ export class VideoSyncController {
     // Smooth linear proportional rate adjustment in tight safe window [0.95, 1.05]
     // ===============================================================
     const absSmoothed = Math.abs(this.smoothedDriftMs);
-    const now = Date.now();
     const timeSinceLastSeek = now - this.lastHardSeekTime;
 
     // Deadband: within ±25ms (less than 1 frame at 30/60fps), do not adjust
@@ -426,6 +471,13 @@ export class VideoSyncController {
       if (this.video.playbackRate !== 1.0) {
         this.video.playbackRate = 1.0;
       }
+      return;
+    }
+
+    if (inInitialCatchup && absSmoothed < 600) {
+      // Faster micro-catchup during initial start phase
+      const catchupRate = this.smoothedDriftMs < 0 ? 1.08 : 0.94;
+      this.video.playbackRate = catchupRate;
       return;
     }
 
