@@ -260,7 +260,7 @@ class iPadPlayerClient {
     }
 
     const fileStatus = document.getElementById('fileUploadStatus');
-    fileStatus.textContent = 'Сохранение файла в постоянное хранилище IndexedDB...';
+    fileStatus.textContent = 'Шаг 1/3: Чтение видеофайла из медиатеки iOS...';
 
     try {
       // Calculate video duration by temporary element
@@ -281,9 +281,16 @@ class iPadPlayerClient {
       });
 
       const duration = tempVideo.duration || 0;
-      await videoDB.saveVideo(this.deviceId, file, duration);
 
-      fileStatus.textContent = `Успешно сохранено: ${file.name} (${Math.round(file.size / (1024 * 1024))} МБ, ${duration.toFixed(1)} сек)`;
+      await videoDB.saveVideo(this.deviceId, file, duration, (stage) => {
+        if (stage === 'reading') {
+          fileStatus.textContent = 'Шаг 1/3: Подготовка бинарных данных видео...';
+        } else if (stage === 'storing') {
+          fileStatus.textContent = 'Шаг 2/3: Запись в постоянную память IndexedDB...';
+        }
+      });
+
+      fileStatus.textContent = `Шаг 3/3: Успешно сохранено: ${file.name} (${Math.round(file.size / (1024 * 1024))} МБ, ${duration.toFixed(1)} сек)`;
       
       // Load into player
       const record = await videoDB.getVideo(this.deviceId);
@@ -291,7 +298,7 @@ class iPadPlayerClient {
       this._updateSettingsInfo();
     } catch (err) {
       console.error('Error saving file:', err);
-      fileStatus.textContent = 'Ошибка сохранения файла: ' + err.message;
+      fileStatus.textContent = 'Ошибка сохранения файла: ' + (err.message || err);
     }
   }
 

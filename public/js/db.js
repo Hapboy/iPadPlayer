@@ -45,14 +45,37 @@ class VideoDB {
 
   /**
    * Save a selected video File/Blob to IndexedDB
+   * Uses ArrayBuffer serialization to prevent iOS Safari WebKit "DataCloneError: Error preparing Blob/File" bug.
    * @param {number|string} deviceId 
    * @param {File|Blob} file 
    * @param {number} duration 
+   * @param {Function} [onProgress]
    * @returns {Promise<Object>}
    */
-  async saveVideo(deviceId, file, duration = 0) {
+  async saveVideo(deviceId, file, duration = 0, onProgress = null) {
     const db = await this.ready();
     const idKey = Number(deviceId);
+
+    if (onProgress) onProgress('reading');
+
+    // Read raw ArrayBuffer from File to detach from iOS Photo/Files sandbox file descriptor
+    let buffer = null;
+    try {
+      if (typeof file.arrayBuffer === 'function') {
+        buffer = await file.arrayBuffer();
+      } else {
+        buffer = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsArrayBuffer(file);
+        });
+      }
+    } catch (readErr) {
+      console.warn('Could not read arrayBuffer, falling back to direct storage:', readErr);
+    }
+
+    if (onProgress) onProgress('storing');
 
     return new Promise((resolve, reject) => {
       const transaction = db.transaction([STORE_NAME], 'readwrite');
@@ -65,7 +88,9 @@ class VideoDB {
         size: file.size,
         duration: duration,
         lastModified: file.lastModified || Date.now(),
-        blob: file
+        // Store ArrayBuffer directly: immune to iOS Safari WebKit blob sandbox bug
+        data: buffer,
+        blob: buffer ? null : file
       };
 
       const request = store.put(record);
@@ -80,7 +105,7 @@ class VideoDB {
       };
 
       request.onerror = (event) => {
-        console.error('Error saving video blob to IndexedDB:', event.target.error);
+        console.error('Error saving video to IndexedDB:', event.target.error);
         reject(event.target.error);
       };
     });
@@ -88,6 +113,7 @@ class VideoDB {
 
   /**
    * Retrieve video record for specified deviceId
+   * Recreates Blob URL from stored ArrayBuffer seamlessly
    * @param {number|string} deviceId 
    * @returns {Promise<Object|null>}
    */
@@ -101,7 +127,14 @@ class VideoDB {
       const request = store.get(idKey);
 
       request.onsuccess = () => {
-        resolve(request.result || null);
+        const record = request.result;
+        if (record) {
+          // Reconstruct Blob from ArrayBuffer if stored as data
+          if (record.data && !record.blob) {
+            record.blob = new Blob([record.data], { type: record.type || 'video/mp4' });
+          }
+        }
+        resolve(record || null);
       };
 
       request.onerror = (event) => {
