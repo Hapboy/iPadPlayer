@@ -19,6 +19,10 @@ export class DeviceStateManager {
       startServerTime: 0, // Server timestamp when playback started
       expectedDuration: 0,
       loop: true,
+      syncMode: 'free_run', // 'free_run' (Mode 1: Native 1.0x with loop-boundary auto-sync) | 'active_sync' (Mode 2: Continuous smooth sync)
+      cycleIndex: 1,
+      nextCycleServerTime: 0,
+      lastLoopBroadcastCycle: 0,
       lastUpdated: Date.now()
     };
 
@@ -186,11 +190,26 @@ export class DeviceStateManager {
     return this.globalPlayback.position;
   }
 
-  setPlay(startServerTime, position) {
+  setSyncMode(mode) {
+    this.globalPlayback.syncMode = (mode === 'active_sync') ? 'active_sync' : 'free_run';
+    this.globalPlayback.lastUpdated = Date.now();
+  }
+
+  setPlay(startServerTime, position = 0) {
     this.globalPlayback.status = 'playing';
     this.globalPlayback.startServerTime = startServerTime;
     this.globalPlayback.position = position;
     this.globalPlayback.lastUpdated = Date.now();
+
+    if (position === 0) {
+      this.globalPlayback.cycleIndex = 1;
+      this.globalPlayback.lastLoopBroadcastCycle = 0;
+    }
+
+    if (this.globalPlayback.expectedDuration > 0) {
+      const remainingSec = Math.max(0, this.globalPlayback.expectedDuration - position);
+      this.globalPlayback.nextCycleServerTime = startServerTime + (remainingSec * 1000);
+    }
   }
 
   setPause(position) {
@@ -202,6 +221,9 @@ export class DeviceStateManager {
   setStop() {
     this.globalPlayback.status = 'stopped';
     this.globalPlayback.position = 0;
+    this.globalPlayback.cycleIndex = 1;
+    this.globalPlayback.nextCycleServerTime = 0;
+    this.globalPlayback.lastLoopBroadcastCycle = 0;
     this.globalPlayback.lastUpdated = Date.now();
   }
 
@@ -209,12 +231,53 @@ export class DeviceStateManager {
     this.globalPlayback.position = position;
     if (this.globalPlayback.status === 'playing') {
       this.globalPlayback.startServerTime = startServerTime;
+      if (this.globalPlayback.expectedDuration > 0) {
+        const remainingSec = Math.max(0, this.globalPlayback.expectedDuration - position);
+        this.globalPlayback.nextCycleServerTime = startServerTime + (remainingSec * 1000);
+      }
     }
     this.globalPlayback.lastUpdated = Date.now();
   }
 
   setLoop(loop) {
     this.globalPlayback.loop = !!loop;
+  }
+
+  /**
+   * Checks if loop boundary is approaching and schedules sync restart
+   * @param {number} leadTimeMs 
+   * @returns {Object|null}
+   */
+  checkLoopBoundary(leadTimeMs = 1200) {
+    const gp = this.globalPlayback;
+    if (gp.status !== 'playing' || !gp.loop || gp.expectedDuration <= 0) {
+      return null;
+    }
+
+    const now = Date.now();
+
+    // Check if next cycle has started
+    if (gp.nextCycleServerTime > 0 && now >= gp.nextCycleServerTime) {
+      gp.cycleIndex++;
+      gp.startServerTime = gp.nextCycleServerTime;
+      gp.position = 0;
+      gp.nextCycleServerTime = gp.startServerTime + (gp.expectedDuration * 1000);
+    }
+
+    // Check if we need to broadcast loop restart command ahead of time
+    if (gp.nextCycleServerTime > 0 && gp.lastLoopBroadcastCycle !== gp.cycleIndex) {
+      const timeUntilNextCycle = gp.nextCycleServerTime - now;
+      if (timeUntilNextCycle > 0 && timeUntilNextCycle <= leadTimeMs) {
+        gp.lastLoopBroadcastCycle = gp.cycleIndex;
+        return {
+          targetServerTime: gp.nextCycleServerTime,
+          nextCycleIndex: gp.cycleIndex + 1,
+          syncMode: gp.syncMode
+        };
+      }
+    }
+
+    return null;
   }
 
   getConnectedClientSockets() {

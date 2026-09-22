@@ -187,7 +187,33 @@ function handleAdminCommand(msg) {
         type: 'command',
         action: 'play',
         targetServerTime,
-        startPosition
+        startPosition,
+        syncMode: stateManager.globalPlayback.syncMode
+      });
+      break;
+    }
+
+    case 'retrigger': {
+      const delayMs = msg.delayMs || 600;
+      const targetServerTime = now + delayMs;
+      stateManager.setPlay(targetServerTime, 0);
+
+      broadcastToClients({
+        type: 'command',
+        action: 'retrigger',
+        targetServerTime,
+        startPosition: 0,
+        syncMode: stateManager.globalPlayback.syncMode
+      });
+      break;
+    }
+
+    case 'set_sync_mode': {
+      stateManager.setSyncMode(msg.mode);
+      broadcastToClients({
+        type: 'command',
+        action: 'set_sync_mode',
+        mode: stateManager.globalPlayback.syncMode
       });
       break;
     }
@@ -219,7 +245,8 @@ function handleAdminCommand(msg) {
         action: 'seek',
         targetServerTime,
         position,
-        autoPlay: stateManager.globalPlayback.status === 'playing'
+        autoPlay: stateManager.globalPlayback.status === 'playing',
+        syncMode: stateManager.globalPlayback.syncMode
       });
       break;
     }
@@ -287,10 +314,22 @@ function handleAdminCommand(msg) {
   broadcastToAdmins();
 }
 
-// Periodic Admin Update Loop (4 times per sec = 250ms)
+// Periodic Loop: Admin state updates & Loop Boundary Auto-Restart
 const adminBroadcastInterval = setInterval(() => {
+  // Check if we need to schedule a synchronized loop restart
+  const loopBoundary = stateManager.checkLoopBoundary(1200);
+  if (loopBoundary) {
+    broadcastToClients({
+      type: 'command',
+      action: 'loop_restart',
+      targetServerTime: loopBoundary.targetServerTime,
+      cycleIndex: loopBoundary.nextCycleIndex,
+      syncMode: loopBoundary.syncMode
+    });
+  }
+
   broadcastToAdmins();
-}, 250);
+}, 200);
 adminBroadcastInterval.unref();
 
 // Stale connection cleaner (every 5 seconds)

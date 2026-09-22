@@ -132,3 +132,30 @@ test('DeviceStateManager - Socket unregistration and cleanup', () => {
   assert.equal(manager.slots.get(10).connected, false);
   assert.equal(manager.slots.get(10).isArmed, false);
 });
+
+test('DeviceStateManager - syncMode switching and loop boundary auto-sync', () => {
+  const manager = new DeviceStateManager(42);
+  assert.equal(manager.globalPlayback.syncMode, 'free_run');
+
+  manager.setSyncMode('active_sync');
+  assert.equal(manager.globalPlayback.syncMode, 'active_sync');
+
+  manager.setSyncMode('free_run');
+  assert.equal(manager.globalPlayback.syncMode, 'free_run');
+
+  // Loop boundary test
+  manager.globalPlayback.expectedDuration = 10; // 10s video
+  const startTime = Date.now() - 9000; // 9s ago (1s remaining before 10s mark)
+  manager.setPlay(startTime, 0);
+
+  // Check boundary with 1.2s lead time (1s <= 1.2s lead time)
+  const boundary = manager.checkLoopBoundary(1200);
+  assert.ok(boundary, 'Boundary should be detected');
+  assert.equal(boundary.nextCycleIndex, 2);
+  assert.equal(boundary.syncMode, 'free_run');
+  assert.ok(boundary.targetServerTime > Date.now());
+
+  // Second check should not duplicate broadcast
+  const duplicate = manager.checkLoopBoundary(1200);
+  assert.equal(duplicate, null, 'Should not duplicate broadcast for the same cycle');
+});

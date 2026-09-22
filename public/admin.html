@@ -50,6 +50,32 @@
       </div>
     </div>
 
+    <!-- Mode Selector & Loop Boundary Strip -->
+    <div class="mode-strip">
+      <div class="mode-selector">
+        <span class="mode-label">РЕЖИМ СИНХРОНИЗАЦИИ:</span>
+        <button id="btnModeFreeRun" class="btn-mode active" title="Без вмешательства во время видео (1.0x), авто-рестарт на границе каждого цикла">
+          <span class="mode-icon">🔄</span>
+          <span>Режим 1: Свободный ход (Авто-рестарт лупа)</span>
+        </button>
+        <button id="btnModeActiveSync" class="btn-mode" title="Непрерывный контроль времени и плавная микро-подстройка скорости">
+          <span class="mode-icon">⚡</span>
+          <span>Режим 2: Активная синхронизация</span>
+        </button>
+      </div>
+
+      <div class="cycle-info-box">
+        <span class="cycle-item">Цикл: <strong id="lblCycleIndex">#1</strong></span>
+        <span class="cycle-item">До авто-рестарта: <strong id="lblLoopRemaining">—</strong></span>
+      </div>
+
+      <div class="mode-actions">
+        <button id="btnRetrigger" class="btn-cmd btn-retrigger" title="Мгновенный синхронный перезапуск всех iPad с 00:00.000">
+          🔁 СИНХРОННЫЙ РЕСТАРТ СЕЙЧАС
+        </button>
+      </div>
+    </div>
+
     <!-- Master Controls Strip -->
     <div class="controls-strip">
       <div class="playback-buttons">

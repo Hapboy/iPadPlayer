@@ -440,7 +440,22 @@ class iPadPlayerClient {
 
     switch (cmd.action) {
       case 'play':
-        this.syncController.schedulePlay(cmd.targetServerTime, cmd.startPosition);
+        this.syncController.schedulePlay(cmd.targetServerTime, cmd.startPosition, cmd.syncMode);
+        this._updateStatusBadgeMode();
+        break;
+
+      case 'retrigger':
+        this.syncController.schedulePlay(cmd.targetServerTime, 0, cmd.syncMode);
+        this._updateStatusBadgeMode();
+        break;
+
+      case 'loop_restart':
+        this.syncController.handleLoopRestart(cmd.targetServerTime, cmd.syncMode);
+        break;
+
+      case 'set_sync_mode':
+        this.syncController.setSyncMode(cmd.mode);
+        this._updateStatusBadgeMode();
         break;
 
       case 'pause':
@@ -448,7 +463,7 @@ class iPadPlayerClient {
         break;
 
       case 'seek':
-        this.syncController.seek(cmd.targetServerTime, cmd.position, cmd.autoPlay);
+        this.syncController.seek(cmd.targetServerTime, cmd.position, cmd.autoPlay, cmd.syncMode);
         break;
 
       case 'stop':
@@ -483,6 +498,12 @@ class iPadPlayerClient {
     }
 
     this.sendTelemetry();
+  }
+
+  _updateStatusBadgeMode() {
+    const modeName = this.syncController.syncMode === 'active_sync' ? 'Активная синхро' : 'Свободный ход';
+    const baseText = `iPad #${this.deviceId || '?'}: Готов (${modeName})`;
+    this._updateStatus(baseText, 'ready');
   }
 
   triggerIdentify(durationMs = 5000) {

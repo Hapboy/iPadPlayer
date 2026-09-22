@@ -100,6 +100,15 @@ export class NTPClockSync {
   }
 }
 
+// Cross-environment animation frame helpers (works in iOS Safari, Chrome, and test runners)
+const safeRaf = typeof requestAnimationFrame !== 'undefined' 
+  ? requestAnimationFrame 
+  : (cb) => setTimeout(cb, 16);
+
+const safeCancelRaf = typeof cancelAnimationFrame !== 'undefined' 
+  ? cancelAnimationFrame 
+  : (id) => clearTimeout(id);
+
 export class VideoSyncController {
   constructor(videoElement, clockSync, options = {}) {
     this.video = videoElement;
@@ -114,7 +123,9 @@ export class VideoSyncController {
     this.driftMonitorTimer = null;
     this.loopEnabled = true;
 
+    this.syncMode = options.syncMode || 'free_run'; // 'free_run' (Mode 1: Native 1.0x with loop restart) | 'active_sync' (Mode 2: Continuous smooth sync)
     this.lastDriftMs = 0;
+    this.smoothedDriftMs = 0;
     this.lastHardSeekTime = 0;
     this.hardSeekCooldownMs = 3000;
     this.onDriftChange = options.onDriftChange || null;
@@ -123,13 +134,27 @@ export class VideoSyncController {
   }
 
   _setupVideoEvents() {
+    // Preserve pitch on iOS WebKit / Google Chrome
+    try {
+      this.video.preservesPitch = true;
+      this.video.webkitPreservesPitch = true;
+    } catch (e) {}
+
     this.video.addEventListener('ended', () => {
       if (this.loopEnabled && this.playServerStartTime > 0) {
-        // Rewind and prepare next loop iteration seamlessly
+        // Fallback local loop if server command didn't arrive yet
         this.video.currentTime = 0;
+        this.video.playbackRate = 1.0;
         this.video.play().catch(e => console.warn('Video loop play warning:', e));
       }
     });
+  }
+
+  setSyncMode(mode) {
+    this.syncMode = (mode === 'active_sync') ? 'active_sync' : 'free_run';
+    if (this.syncMode === 'free_run') {
+      this.video.playbackRate = 1.0;
+    }
   }
 
   setLoop(enabled) {
@@ -139,13 +164,18 @@ export class VideoSyncController {
   /**
    * High-precision scheduled play command
    */
-  schedulePlay(targetServerTime, startPosition = 0) {
+  schedulePlay(targetServerTime, startPosition = 0, syncMode = null) {
     this.cancelScheduled();
+
+    if (syncMode) {
+      this.setSyncMode(syncMode);
+    }
 
     this.playServerStartTime = targetServerTime;
     this.playStartPosition = Math.max(0, startPosition);
     this.isPlayScheduled = true;
-    this.lastHardSeekTime = Date.now(); // Reset cooldown on new play
+    this.lastHardSeekTime = Date.now();
+    this.smoothedDriftMs = 0;
 
     const targetLocalTime = this.clockSync.toLocalTime(targetServerTime);
     const nowLocal = Date.now();
@@ -154,6 +184,7 @@ export class VideoSyncController {
     // Set video position ahead of time so the first frame is pre-buffered
     try {
       this.video.currentTime = this.playStartPosition;
+      this.video.playbackRate = 1.0;
     } catch (e) {
       console.warn('Initial seek failed:', e);
     }
@@ -187,10 +218,10 @@ export class VideoSyncController {
         this.isPlayScheduled = false;
         this.scheduledRafId = null;
       } else {
-        this.scheduledRafId = requestAnimationFrame(step);
+        this.scheduledRafId = safeRaf(step);
       }
     };
-    this.scheduledRafId = requestAnimationFrame(step);
+    this.scheduledRafId = safeRaf(step);
   }
 
   _startImmediatePlay(seekPosition) {
@@ -209,6 +240,58 @@ export class VideoSyncController {
     this.isPlayScheduled = false;
   }
 
+  /**
+   * Seamless scheduled loop restart at cycle boundary
+   * Synchronously resets position to 0 exactly at targetServerTime
+   */
+  handleLoopRestart(targetServerTime, syncMode = null) {
+    if (syncMode) {
+      this.setSyncMode(syncMode);
+    }
+
+    const targetLocalTime = this.clockSync.toLocalTime(targetServerTime);
+    const nowLocal = Date.now();
+    const waitMs = targetLocalTime - nowLocal;
+
+    this.playServerStartTime = targetServerTime;
+    this.playStartPosition = 0;
+    this.smoothedDriftMs = 0;
+
+    if (waitMs > 25) {
+      this.scheduledTimerId = setTimeout(() => {
+        const step = () => {
+          if (Date.now() >= targetLocalTime - 2) {
+            this.video.currentTime = 0;
+            this.video.playbackRate = 1.0;
+            this.video.play().catch(e => console.warn('Loop restart play:', e));
+          } else {
+            this.scheduledRafId = safeRaf(step);
+          }
+        };
+        this.scheduledRafId = safeRaf(step);
+      }, waitMs - 20);
+    } else if (waitMs > 0) {
+      const step = () => {
+        if (Date.now() >= targetLocalTime - 2) {
+          this.video.currentTime = 0;
+          this.video.playbackRate = 1.0;
+          this.video.play().catch(e => console.warn('Loop restart play:', e));
+        } else {
+          this.scheduledRafId = safeRaf(step);
+        }
+      };
+      this.scheduledRafId = safeRaf(step);
+    } else {
+      // Past due
+      const elapsed = Math.min(this.video.duration || 10, Math.abs(waitMs) / 1000);
+      try {
+        this.video.currentTime = elapsed;
+      } catch (e) {}
+      this.video.playbackRate = 1.0;
+      this.video.play().catch(e => console.warn('Loop restart late:', e));
+    }
+  }
+
   pause(position) {
     this.cancelScheduled();
     this.stopDriftMonitoring();
@@ -221,6 +304,7 @@ export class VideoSyncController {
       } catch (e) {}
     }
     this.lastDriftMs = 0;
+    this.smoothedDriftMs = 0;
   }
 
   stop() {
@@ -234,20 +318,26 @@ export class VideoSyncController {
     this.playServerStartTime = 0;
     this.playStartPosition = 0;
     this.lastDriftMs = 0;
+    this.smoothedDriftMs = 0;
   }
 
-  seek(targetServerTime, position, autoPlay = true) {
+  seek(targetServerTime, position, autoPlay = true, syncMode = null) {
     this.cancelScheduled();
     this.playStartPosition = position;
     this.playServerStartTime = targetServerTime;
     this.lastHardSeekTime = Date.now();
+    this.smoothedDriftMs = 0;
+
+    if (syncMode) {
+      this.setSyncMode(syncMode);
+    }
 
     try {
       this.video.currentTime = position;
     } catch (e) {}
 
     if (autoPlay) {
-      this.schedulePlay(targetServerTime, position);
+      this.schedulePlay(targetServerTime, position, syncMode);
     } else {
       this.pause(position);
     }
@@ -259,7 +349,7 @@ export class VideoSyncController {
       this.scheduledTimerId = null;
     }
     if (this.scheduledRafId) {
-      cancelAnimationFrame(this.scheduledRafId);
+      safeCancelRaf(this.scheduledRafId);
       this.scheduledRafId = null;
     }
     this.isPlayScheduled = false;
@@ -267,7 +357,7 @@ export class VideoSyncController {
 
   _startDriftMonitoring() {
     this.stopDriftMonitoring();
-    // Check drift every 250ms during playback (gives decoder stability)
+    // Check drift every 250ms during playback
     this.driftMonitorTimer = setInterval(() => {
       this.correctDrift();
     }, 250);
@@ -301,45 +391,62 @@ export class VideoSyncController {
     }
 
     const driftSec = this.video.currentTime - expectedPosition;
-    const driftMs = Math.round(driftSec * 1000);
-    this.lastDriftMs = driftMs;
+    const rawDriftMs = Math.round(driftSec * 1000);
+    this.lastDriftMs = rawDriftMs;
+
+    // Exponential Moving Average (EMA) to filter out WebKit/Chrome timer jitter
+    this.smoothedDriftMs = Math.round(0.25 * rawDriftMs + 0.75 * this.smoothedDriftMs);
 
     if (this.onDriftChange) {
-      this.onDriftChange(driftMs);
+      this.onDriftChange(rawDriftMs);
     }
 
-    const absDrift = Math.abs(driftMs);
-    const now = Date.now();
-    const timeSinceLastSeek = now - this.lastHardSeekTime;
-
-    // Smooth multi-tier sync logic to prevent decoder stutter:
-    if (absDrift < 35) {
-      // In-sync zone (< 1-2 frames): normal 1.0 playback
+    // ===============================================================
+    // MODE 1: Free-run with Loop Auto-Sync
+    // During playback, NO drift corrections are made (hardware 1.0x native rate)
+    // Synchronicity is reset at each loop boundary!
+    // ===============================================================
+    if (this.syncMode === 'free_run') {
       if (this.video.playbackRate !== 1.0) {
         this.video.playbackRate = 1.0;
       }
-    } else if (absDrift <= 100) {
-      // Micro-drift: imperceptible pitch-neutral adjustment (±2%)
-      this.video.playbackRate = driftMs > 0 ? 0.98 : 1.02;
-    } else if (absDrift <= 300) {
-      // Moderate drift: gentle catchup without any audio pop (±6%)
-      this.video.playbackRate = driftMs > 0 ? 0.94 : 1.06;
-    } else if (absDrift < 700) {
-      // Significant drift (300ms - 700ms): smooth accelerated catchup (±12%)
-      // This catches up 350ms in ~3 seconds with ZERO decoder stalls!
-      this.video.playbackRate = driftMs > 0 ? 0.88 : 1.12;
-    } else {
-      // Gross desync (>= 700ms): perform a hard seek ONLY if cooldown has passed
+      return;
+    }
+
+    // ===============================================================
+    // MODE 2: Continuous Precision Active Sync
+    // Smooth linear proportional rate adjustment in tight safe window [0.95, 1.05]
+    // ===============================================================
+    const absSmoothed = Math.abs(this.smoothedDriftMs);
+    const now = Date.now();
+    const timeSinceLastSeek = now - this.lastHardSeekTime;
+
+    // Deadband: within ±25ms (less than 1 frame at 30/60fps), do not adjust
+    if (absSmoothed <= 25) {
+      if (this.video.playbackRate !== 1.0) {
+        this.video.playbackRate = 1.0;
+      }
+      return;
+    }
+
+    if (absSmoothed >= 600) {
+      // Gross desync: hard seek only if cooldown has expired
       if (timeSinceLastSeek > this.hardSeekCooldownMs) {
         try {
           this.video.currentTime = expectedPosition;
         } catch (e) {}
         this.video.playbackRate = 1.0;
         this.lastHardSeekTime = now;
+        this.smoothedDriftMs = 0;
       } else {
-        // Under cooldown: keep accelerated rate to allow decoder buffer to stabilize
-        this.video.playbackRate = driftMs > 0 ? 0.85 : 1.15;
+        // In cooldown: apply safe max rate without resetting buffer
+        this.video.playbackRate = this.smoothedDriftMs > 0 ? 0.95 : 1.05;
       }
+    } else {
+      // Proportional linear smooth rate (imperceptible pitch-preserved scaling)
+      const delta = (this.smoothedDriftMs / 1000) * 0.12;
+      const targetRate = Math.min(1.05, Math.max(0.95, 1.0 - delta));
+      this.video.playbackRate = Math.round(targetRate * 1000) / 1000;
     }
   }
 

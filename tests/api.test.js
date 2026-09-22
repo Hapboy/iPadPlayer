@@ -169,6 +169,65 @@ test('API & WebSocket Integration Test', async (t) => {
     adminWs.close();
   });
 
+  // 6. Mode switching and retrigger commands
+  await t.test('Admin broadcast set_sync_mode and retrigger commands reach client', async () => {
+    const clientWs = new WebSocket(wsUrl);
+    const adminWs = new WebSocket(wsUrl);
+
+    await Promise.all([
+      new Promise((resolve) => clientWs.on('open', resolve)),
+      new Promise((resolve) => adminWs.on('open', resolve))
+    ]);
+
+    clientWs.send(JSON.stringify({ type: 'register', role: 'client', id: 4 }));
+    adminWs.send(JSON.stringify({ type: 'register', role: 'admin' }));
+    await new Promise(r => setTimeout(r, 60));
+
+    // Test set_sync_mode
+    const modePromise = new Promise((resolve) => {
+      clientWs.on('message', (raw) => {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'command' && msg.action === 'set_sync_mode') {
+          resolve(msg);
+        }
+      });
+    });
+
+    adminWs.send(JSON.stringify({
+      type: 'admin_command',
+      action: 'set_sync_mode',
+      mode: 'active_sync'
+    }));
+
+    const modeCmd = await modePromise;
+    assert.equal(modeCmd.action, 'set_sync_mode');
+    assert.equal(modeCmd.mode, 'active_sync');
+
+    // Test retrigger
+    const retriggerPromise = new Promise((resolve) => {
+      clientWs.on('message', (raw) => {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'command' && msg.action === 'retrigger') {
+          resolve(msg);
+        }
+      });
+    });
+
+    adminWs.send(JSON.stringify({
+      type: 'admin_command',
+      action: 'retrigger',
+      delayMs: 300
+    }));
+
+    const retriggerCmd = await retriggerPromise;
+    assert.equal(retriggerCmd.action, 'retrigger');
+    assert.equal(retriggerCmd.startPosition, 0);
+    assert.ok(retriggerCmd.targetServerTime > Date.now());
+
+    clientWs.close();
+    adminWs.close();
+  });
+
   // Clean close
   await closeServer();
 });

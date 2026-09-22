@@ -39,6 +39,20 @@ class AdminDashboard {
       this.sendMasterCommand('seek', { position: 0 });
     });
 
+    // Mode Switcher Buttons
+    document.getElementById('btnModeFreeRun').addEventListener('click', () => {
+      this.sendMasterCommand('set_sync_mode', { mode: 'free_run' });
+    });
+
+    document.getElementById('btnModeActiveSync').addEventListener('click', () => {
+      this.sendMasterCommand('set_sync_mode', { mode: 'active_sync' });
+    });
+
+    // Retrigger Button (Synchronous Restart)
+    document.getElementById('btnRetrigger').addEventListener('click', () => {
+      this.sendMasterCommand('retrigger', { delayMs: 600 });
+    });
+
     // Master Timeline Slider
     const timeline = document.getElementById('masterTimeline');
     timeline.addEventListener('mousedown', () => { this.isScrubbing = true; });
@@ -222,6 +236,27 @@ class AdminDashboard {
 
     const loopBtn = document.getElementById('btnToggleLoop');
     loopBtn.classList.toggle('active', !!playback.loop);
+
+    // Sync Mode Buttons
+    const isFreeRun = playback.syncMode !== 'active_sync';
+    document.getElementById('btnModeFreeRun').classList.toggle('active', isFreeRun);
+    document.getElementById('btnModeActiveSync').classList.toggle('active', !isFreeRun);
+
+    // Cycle & Loop Auto-Sync Info
+    const cycleEl = document.getElementById('lblCycleIndex');
+    if (cycleEl) {
+      cycleEl.textContent = `#${playback.cycleIndex || 1}`;
+    }
+
+    const loopRemainingEl = document.getElementById('lblLoopRemaining');
+    if (loopRemainingEl) {
+      if (playback.status === 'playing' && playback.nextCycleServerTime > 0) {
+        const remainingSec = Math.max(0, (playback.nextCycleServerTime - Date.now()) / 1000);
+        loopRemainingEl.textContent = this._formatTime(remainingSec);
+      } else {
+        loopRemainingEl.textContent = '—';
+      }
+    }
   }
 
   _updateDeviceCards(devices) {
