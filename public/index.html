@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>iPad Sync Player</title>
+  
+  <!-- Apple Web App Meta Tags -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="iPad Player">
+  <meta name="theme-color" content="#000000">
+
+  <!-- Manifest -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon-192.svg">
+  <link rel="icon" type="image/svg+xml" href="/icons/icon-192.svg">
+
+  <link rel="stylesheet" href="/css/client.css">
+</head>
+<body>
+
+  <div class="player-stage">
+    <!-- Main Video Element -->
+    <video id="mainVideo" playsinline webkit-playsinline preload="auto"></video>
+
+    <!-- Blackout Overlay (remote controlled by admin) -->
+    <div id="blackoutOverlay" class="blackout-overlay hidden"></div>
+
+    <!-- Identify Flash Screen -->
+    <div id="identifyOverlay" class="identify-overlay hidden">
+      <div id="identifyId" class="identify-id">#01</div>
+      <div id="identifyFile" class="identify-file">video_01.mp4</div>
+    </div>
+
+    <!-- Floating Corner HUD / Info Bar -->
+    <div id="infoOverlay" class="info-overlay">
+      <div id="statusBadge" class="status-badge warning">Инициализация...</div>
+
+      <div class="hud-metrics">
+        <div class="hud-item">пинг: <span id="infoLatency">—</span></div>
+        <div class="hud-item">дрифт: <span id="infoDrift">0 мс</span></div>
+      </div>
+
+      <div class="action-buttons">
+        <button id="btnToggleFullscreen" class="icon-button" title="Полный экран">⛶</button>
+        <button id="btnOpenSettings" class="icon-button" title="Настройки">⚙️</button>
+      </div>
+    </div>
+
+    <!-- Initial User Gesture / Arm Overlay -->
+    <div id="armOverlay" class="arm-overlay">
+      <div class="arm-content">
+        <h1>Синхронный плеер iPad</h1>
+        <p>Для запуска полноэкранного режима и разблокировки воспроизведения нажмите кнопку ниже.</p>
+        <button id="armButton" class="btn-arm">
+          <span>⚡</span>
+          <span>ВСТАТЬ НА ВЗВОД (ARM)</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal-backdrop">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>Настройки устройства</h2>
+          <button id="btnCloseSettings" class="btn-close">&times;</button>
+        </div>
+
+        <div class="setting-group">
+          <label for="deviceIdSelect">Номер слота iPad (1 – 42):</label>
+          <select id="deviceIdSelect" class="select-control">
+            <!-- Filled dynamically -->
+          </select>
+        </div>
+
+        <div class="setting-group">
+          <label>Локальный видеофайл на iPad:</label>
+          <label class="file-picker-box">
+            <span style="font-size: 28px;">📁</span>
+            <div style="margin-top: 6px; font-weight: 600;">Нажмите для выбора видео</div>
+            <div style="font-size: 12px; color: #888; margin-top: 4px;">Из приложения «Файлы» или «Фото»</div>
+            <span class="btn-file-select">Выбрать файл</span>
+            <input type="file" id="videoFileInput" accept="video/mp4,video/quicktime,video/*">
+          </label>
+          <div id="fileUploadStatus" style="font-size: 13px; color: #58a6ff; margin-top: 8px;"></div>
+        </div>
+
+        <div class="setting-group">
+          <label>Статус локального хранилища:</label>
+          <div class="storage-status-card">
+            <div class="storage-row">
+              <span>Текущее видео:</span>
+              <strong id="currentFileName">Не выбрано</strong>
+            </div>
+            <div class="storage-row">
+              <span>Хранилище iPad (IndexedDB):</span>
+              <span id="storageQuota">—</span>
+            </div>
+            <div class="storage-row">
+              <span>Адрес сервера:</span>
+              <span id="serverUrlDisplay">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-group" style="display: flex; gap: 10px;">
+          <button id="btnTestPlay" class="btn-secondary" style="flex: 1;">▶ Тест видео</button>
+          <button id="btnDeleteFile" class="btn-danger">🗑 Удалить файл</button>
+        </div>
+
+        <div class="modal-actions">
+          <button id="btnSaveSettings" class="btn-primary" style="width: 100%;">Сохранить настройки</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/js/client.js"></script>
+  <script>
+    // Register Service Worker for PWA
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').then(
+          (reg) => console.log('PWA ServiceWorker registered:', reg.scope),
+          (err) => console.warn('PWA ServiceWorker registration failed:', err)
+        );
+      });
+    }
+  </script>
+</body>
+</html>

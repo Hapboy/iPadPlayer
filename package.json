@@ -1,0 +1,26 @@
+{
+  "name": "ipad-sync-video-player",
+  "version": "1.0.0",
+  "description": "Synchronous video player for 42 iPads via PWA and WebSockets with local IndexedDB storage",
+  "main": "server/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "test": "node --test tests/**/*.test.js"
+  },
+  "keywords": [
+    "pwa",
+    "ipad",
+    "video-sync",
+    "indexeddb",
+    "websocket",
+    "ntp"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}
