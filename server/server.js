@@ -175,7 +175,7 @@ function handleAdminCommand(msg) {
 
   switch (msg.action) {
     case 'play': {
-      const delayMs = msg.delayMs || 600; // 600ms lead time allows Wi-Fi delivery to 42 devices
+      const delayMs = msg.delayMs || 1200; // 1200ms lead time allows Wi-Fi delivery and hardware decoder pre-buffering
       const targetServerTime = now + delayMs;
       const startPosition = typeof msg.position === 'number' 
         ? Math.max(0, msg.position) 
@@ -208,7 +208,7 @@ function handleAdminCommand(msg) {
     }
 
     case 'seek': {
-      const delayMs = msg.delayMs || 400;
+      const delayMs = msg.delayMs || 600;
       const targetServerTime = now + delayMs;
       const position = Math.max(0, Number(msg.position) || 0);
 

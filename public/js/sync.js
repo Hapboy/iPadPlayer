@@ -115,6 +115,8 @@ export class VideoSyncController {
     this.loopEnabled = true;
 
     this.lastDriftMs = 0;
+    this.lastHardSeekTime = 0;
+    this.hardSeekCooldownMs = 3000;
     this.onDriftChange = options.onDriftChange || null;
 
     this._setupVideoEvents();
@@ -143,6 +145,7 @@ export class VideoSyncController {
     this.playServerStartTime = targetServerTime;
     this.playStartPosition = Math.max(0, startPosition);
     this.isPlayScheduled = true;
+    this.lastHardSeekTime = Date.now(); // Reset cooldown on new play
 
     const targetLocalTime = this.clockSync.toLocalTime(targetServerTime);
     const nowLocal = Date.now();
@@ -237,6 +240,7 @@ export class VideoSyncController {
     this.cancelScheduled();
     this.playStartPosition = position;
     this.playServerStartTime = targetServerTime;
+    this.lastHardSeekTime = Date.now();
 
     try {
       this.video.currentTime = position;
@@ -263,10 +267,10 @@ export class VideoSyncController {
 
   _startDriftMonitoring() {
     this.stopDriftMonitoring();
-    // Check drift every 150ms during playback
+    // Check drift every 250ms during playback (gives decoder stability)
     this.driftMonitorTimer = setInterval(() => {
       this.correctDrift();
-    }, 150);
+    }, 250);
   }
 
   stopDriftMonitoring() {
@@ -304,26 +308,38 @@ export class VideoSyncController {
       this.onDriftChange(driftMs);
     }
 
-    // Adaptive sync logic
     const absDrift = Math.abs(driftMs);
+    const now = Date.now();
+    const timeSinceLastSeek = now - this.lastHardSeekTime;
 
+    // Smooth multi-tier sync logic to prevent decoder stutter:
     if (absDrift < 35) {
-      // Negligible drift (< 1-2 frames): keep natural 1.0 speed
+      // In-sync zone (< 1-2 frames): normal 1.0 playback
       if (this.video.playbackRate !== 1.0) {
         this.video.playbackRate = 1.0;
       }
-    } else if (absDrift <= 90) {
-      // Minor drift: smooth unnoticeable correction (±2%)
+    } else if (absDrift <= 100) {
+      // Micro-drift: imperceptible pitch-neutral adjustment (±2%)
       this.video.playbackRate = driftMs > 0 ? 0.98 : 1.02;
-    } else if (absDrift <= 220) {
-      // Moderate drift: noticeable but audio-safe correction (±5%)
-      this.video.playbackRate = driftMs > 0 ? 0.95 : 1.05;
+    } else if (absDrift <= 300) {
+      // Moderate drift: gentle catchup without any audio pop (±6%)
+      this.video.playbackRate = driftMs > 0 ? 0.94 : 1.06;
+    } else if (absDrift < 700) {
+      // Significant drift (300ms - 700ms): smooth accelerated catchup (±12%)
+      // This catches up 350ms in ~3 seconds with ZERO decoder stalls!
+      this.video.playbackRate = driftMs > 0 ? 0.88 : 1.12;
     } else {
-      // Major drift (> 220ms): hard seek to snap instantly back into sync
-      try {
-        this.video.currentTime = expectedPosition;
-      } catch (e) {}
-      this.video.playbackRate = 1.0;
+      // Gross desync (>= 700ms): perform a hard seek ONLY if cooldown has passed
+      if (timeSinceLastSeek > this.hardSeekCooldownMs) {
+        try {
+          this.video.currentTime = expectedPosition;
+        } catch (e) {}
+        this.video.playbackRate = 1.0;
+        this.lastHardSeekTime = now;
+      } else {
+        // Under cooldown: keep accelerated rate to allow decoder buffer to stabilize
+        this.video.playbackRate = driftMs > 0 ? 0.85 : 1.15;
+      }
     }
   }
 
